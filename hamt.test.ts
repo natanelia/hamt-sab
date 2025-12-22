@@ -90,4 +90,17 @@ describe('HAMT', () => {
     expect(h4.get('c')).toBe('3');
   });
 
+  test('structural sharing - nodes reused', () => {
+    const h1 = new HAMT("string").set('a', '1').set('b', '2').set('c', '3');
+    const h2 = h1.set('d', '4');
+    
+    // Both should have same data
+    expect(h1.get('a')).toBe('1');
+    expect(h1.get('b')).toBe('2');
+    expect(h1.get('c')).toBe('3');
+    expect(h2.get('a')).toBe('1');
+    expect(h2.get('b')).toBe('2');
+    expect(h2.get('c')).toBe('3');
+    expect(h2.get('d')).toBe('4');
+  });
 });
