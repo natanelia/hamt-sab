@@ -6,7 +6,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const wasmBytes = readFileSync(join(__dirname, 'hamt-wasm.wasm'));
 const wasmModule = new WebAssembly.Module(wasmBytes);
 const wasmMemory = new WebAssembly.Memory({ initial: 2, maximum: 65536, shared: true });
-const wasmInstance = new WebAssembly.Instance(wasmModule, { env: { memory: wasmMemory, abort: () => {} } });
+const wasmInstance = new WebAssembly.Instance(wasmModule, { env: { memory: wasmMemory } });
 const wasm = wasmInstance.exports as any;
 const keyBufPtr = wasm.keyBuf();
 const batchBufPtr = wasm.batchBuf();

@@ -10,7 +10,7 @@
     "test": "bun test",
     "bench": "bun benchmark.ts",
     "build": "bun build hamt.ts --outdir dist",
-    "build:wasm": "asc hamt.as.ts -o hamt-wasm.wasm --importMemory --enable threads"
+    "build:wasm": "asc hamt.as.ts -o hamt-wasm.wasm --importMemory --sharedMemory --initialMemory 2 --maximumMemory 65536 --enable threads"
   },
   "keywords": ["hamt", "immutable", "wasm", "sharedarraybuffer"],
   "author": "natanelia",
