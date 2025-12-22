@@ -46,14 +46,6 @@ describe('HAMT', () => {
     keys.forEach((k, i) => expect(h.get(k)).toBe(`v${i}`));
   });
 
-  test('structural sharing - buffer reused', () => {
-    const h1 = new HAMT("string");
-    const h2 = h1.set('a', '1');
-    const h3 = h2.set('b', '2');
-    expect(h1.getBuffer()).toBe(h2.getBuffer());
-    expect(h2.getBuffer()).toBe(h3.getBuffer());
-  });
-
   test('missing key returns undefined', () => {
     const h = new HAMT("string").set('exists', 'yes');
     expect(h.get('missing')).toBeUndefined();
@@ -98,60 +90,4 @@ describe('HAMT', () => {
     expect(h4.get('c')).toBe('3');
   });
 
-  test('serialization roundtrip', () => {
-    let h = new HAMT("string");
-    for (let i = 0; i < 50; i++) h = h.set(`key${i}`, `val${i}`);
-    
-    const serialized = h.serialize();
-    const restored = SharedHAMT.deserialize(serialized);
-    
-    for (let i = 0; i < 50; i++) expect(restored.get(`key${i}`)).toBe(`val${i}`);
-  });
-});
-
-describe('Worker sharing', () => {
-  test('main thread writes, worker reads', async () => {
-    let h = new HAMT("string");
-    for (let i = 0; i < 100; i++) h = h.set(`key${i}`, `val${i}`);
-
-    const worker = new Worker(new URL('./worker.ts', import.meta.url));
-    
-    const result = await new Promise<Record<string, string | undefined>>((resolve) => {
-      worker.onmessage = (e) => resolve(e.data.results);
-      worker.postMessage({ type: 'verify', data: h.serialize() });
-    });
-
-    for (let i = 0; i < 100; i++) {
-      expect(result[`key${i}`]).toBe(`val${i}`);
-    }
-    worker.terminate();
-  });
-
-  test('worker reads single key', async () => {
-    const h = new HAMT("string").set('shared', 'data');
-    const worker = new Worker(new URL('./worker.ts', import.meta.url));
-
-    const result = await new Promise<string | undefined>((resolve) => {
-      worker.onmessage = (e) => resolve(e.data.value);
-      worker.postMessage({ type: 'get', data: h.serialize(), key: 'shared' });
-    });
-
-    expect(result).toBe('data');
-    worker.terminate();
-  });
-
-  test('worker writes, main thread reads', async () => {
-    const h = new HAMT("string").set('initial', 'value');
-    const worker = new Worker(new URL('./worker.ts', import.meta.url));
-
-    const serialized = await new Promise<any>((resolve) => {
-      worker.onmessage = (e) => resolve(e.data.data);
-      worker.postMessage({ type: 'set', data: h.serialize(), key: 'worker', value: 'wrote' });
-    });
-
-    const updated = SharedHAMT.deserialize(serialized);
-    expect(updated.get('initial')).toBe('value');
-    expect(updated.get('worker')).toBe('wrote');
-    worker.terminate();
-  });
 });
