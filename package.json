@@ -1,0 +1,20 @@
+{
+  "name": "hamt-sab",
+  "version": "1.0.0",
+  "description": "High-performance immutable HAMT implementation with SharedArrayBuffer support",
+  "type": "module",
+  "main": "dist/hamt.js",
+  "types": "dist/hamt.d.ts",
+  "files": ["dist", "hamt.ts"],
+  "scripts": {
+    "test": "bun test",
+    "build": "bun build hamt.ts --outdir dist"
+  },
+  "keywords": ["hamt", "immutable", "wasm", "sharedarraybuffer"],
+  "author": "natanelia",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git@github.com:natanelia/hamt-sab.git"
+  }
+}
