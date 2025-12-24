@@ -3,7 +3,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const wasmBytes = readFileSync(join(__dirname, 'vector-wasm.wasm'));
+const wasmBytes = readFileSync(join(__dirname, 'shared-list.wasm'));
 const wasmModule = new WebAssembly.Module(wasmBytes);
 
 let wasmMemory: WebAssembly.Memory;
@@ -80,7 +80,7 @@ export function getBufferCopy(): Uint8Array {
   return new Uint8Array(wasmMemory.buffer).slice();
 }
 
-export function resetVector(): void {
+export function resetSharedList(): void {
   generation++;
   wasm.reset();
 }
@@ -98,8 +98,8 @@ const registry = new FinalizationRegistry<{ root: number; depth: number; gen: nu
   }
 );
 
-export type VectorType = 'number' | 'string' | 'boolean' | 'object';
-type ValueOf<T extends VectorType> = T extends 'number' ? number : T extends 'string' ? string : T extends 'boolean' ? boolean : object;
+export type SharedListType = 'number' | 'string' | 'boolean' | 'object';
+type ValueOf<T extends SharedListType> = T extends 'number' ? number : T extends 'string' ? string : T extends 'boolean' ? boolean : object;
 
 function packPtrLen(ptr: number, len: number): number {
   const buf = new ArrayBuffer(8);
@@ -116,7 +116,7 @@ function unpackPtrLen(val: number): [number, number] {
   return [dv.getUint32(0, true), dv.getUint32(4, true)];
 }
 
-export class Vector<T extends VectorType = 'number'> {
+export class SharedList<T extends SharedListType = 'number'> {
   readonly root: number;
   private depth: number;
   private _size: number;
@@ -161,11 +161,11 @@ export class Vector<T extends VectorType = 'number'> {
     return JSON.parse(str) as ValueOf<T>;
   }
 
-  push(value: ValueOf<T>): Vector<T> {
-    if (this.gen !== generation || this.disposed) return new Vector(this.type).push(value);
+  push(value: ValueOf<T>): SharedList<T> {
+    if (this.gen !== generation || this.disposed) return new SharedList(this.type).push(value);
     wasm.vecPush(this.root, this.depth, this._size, this.encode(value));
     refreshMem();
-    return new Vector(
+    return new SharedList(
       this.type,
       memDv.getUint32(scratchPtr, true),
       memDv.getUint32(scratchPtr + 4, true),
@@ -178,17 +178,17 @@ export class Vector<T extends VectorType = 'number'> {
     return this.decode(wasm.vecGet(this.root, this.depth, index));
   }
 
-  set(index: number, value: ValueOf<T>): Vector<T> {
+  set(index: number, value: ValueOf<T>): SharedList<T> {
     if (this.gen !== generation || this.disposed || index < 0 || index >= this._size) return this;
     const newRoot = wasm.vecSet(this.root, this.depth, index, this.encode(value));
-    return new Vector(this.type, newRoot, this.depth, this._size);
+    return new SharedList(this.type, newRoot, this.depth, this._size);
   }
 
-  pop(): Vector<T> {
+  pop(): SharedList<T> {
     if (this.gen !== generation || this.disposed || this._size === 0) return this;
     wasm.vecPop(this.root, this.depth, this._size);
     refreshMem();
-    return new Vector(
+    return new SharedList(
       this.type,
       memDv.getUint32(scratchPtr, true),
       memDv.getUint32(scratchPtr + 4, true),
@@ -217,8 +217,8 @@ export class Vector<T extends VectorType = 'number'> {
     return arr;
   }
 
-  pushMany(values: ValueOf<T>[]): Vector<T> {
-    let v: Vector<T> = this;
+  pushMany(values: ValueOf<T>[]): SharedList<T> {
+    let v: SharedList<T> = this;
     for (const val of values) v = v.push(val);
     return v;
   }
@@ -227,7 +227,7 @@ export class Vector<T extends VectorType = 'number'> {
     return { root: this.root, depth: this.depth, size: this._size, type: this.type };
   }
 
-  static fromWorkerData<T extends VectorType>(data: { root: number; depth: number; size: number; type: T }): Vector<T> {
-    return new Vector(data.type, data.root, data.depth, data.size);
+  static fromWorkerData<T extends VectorType>(data: { root: number; depth: number; size: number; type: T }): SharedList<T> {
+    return new SharedList(data.type, data.root, data.depth, data.size);
   }
 }

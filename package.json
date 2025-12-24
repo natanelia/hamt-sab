@@ -1,22 +1,28 @@
 {
-  "name": "hamt-sab",
+  "name": "shared-immutable",
   "version": "1.0.0",
-  "description": "High-performance immutable HAMT implementation with SharedArrayBuffer support",
+  "description": "High-performance immutable data structures with SharedArrayBuffer for cross-worker sharing",
   "type": "module",
-  "main": "dist/hamt.js",
-  "types": "dist/hamt.d.ts",
-  "files": ["dist", "hamt.ts"],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "scripts": {
-    "test": "bun test",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "bench": "bun benchmark.ts",
-    "build": "bun build hamt.ts --outdir dist",
-    "build:wasm": "asc hamt.as.ts -o hamt-wasm.wasm --importMemory --sharedMemory --initialMemory 2 --maximumMemory 65536 --enable threads"
+    "build:wasm": "asc shared-map.as.ts -o shared-map.wasm --importMemory --sharedMemory --initialMemory 2 --maximumMemory 65536 --enable threads && asc shared-list.as.ts -o shared-list.wasm --importMemory --sharedMemory --initialMemory 2 --maximumMemory 65536 --enable threads && asc linked-list.as.ts -o linked-list.wasm --importMemory --sharedMemory --initialMemory 2 --maximumMemory 65536 --enable threads"
   },
-  "keywords": ["hamt", "immutable", "wasm", "sharedarraybuffer"],
+  "keywords": [
+    "immutable",
+    "shared",
+    "wasm",
+    "sharedarraybuffer",
+    "worker"
+  ],
   "author": "natanelia",
   "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git@github.com:natanelia/hamt-sab.git"
+  "devDependencies": {
+    "assemblyscript": "^0.28.9",
+    "immutable": "^5.1.4",
+    "vitest": "^4.0.16"
   }
 }

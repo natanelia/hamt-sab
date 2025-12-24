@@ -3,7 +3,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const wasmBytes = readFileSync(join(__dirname, 'hamt-wasm.wasm'));
+const wasmBytes = readFileSync(join(__dirname, 'shared-map.wasm'));
 const wasmModule = new WebAssembly.Module(wasmBytes);
 const wasmMemory = new WebAssembly.Memory({ initial: 2, maximum: 65536, shared: true });
 const wasmInstance = new WebAssembly.Instance(wasmModule, { env: { memory: wasmMemory } });
@@ -16,7 +16,7 @@ let generation = 0;
 const strCache = new Map<number, string>();
 let clearObjPoolFn: () => void = () => {};
 let clearObjCacheFn: () => void = () => {};
-export function resetBuffer(): void { generation++; wasm.reset(); strCache.clear(); clearObjPoolFn(); clearObjCacheFn(); freeSlots.length = 0; pendingDispose.length = 0; opsSinceGC = 0; }
+export function resetMap(): void { generation++; wasm.reset(); strCache.clear(); clearObjPoolFn(); clearObjCacheFn(); freeSlots.length = 0; pendingDispose.length = 0; opsSinceGC = 0; }
 export function getUsedBytes(): number { return wasm.getUsedBytes(); }
 
 // Auto-GC configuration
@@ -24,7 +24,7 @@ let autoGCEnabled = true;
 let gcMemoryThreshold = 1024 * 1024; // 1MB
 let gcOpsThreshold = 1000;
 let opsSinceGC = 0;
-const pendingDispose: HAMT<any>[] = [];
+const pendingDispose: SharedMap<any>[] = [];
 
 export function configureAutoGC(opts: { enabled?: boolean; memoryThreshold?: number; opsThreshold?: number }) {
   if (opts.enabled !== undefined) autoGCEnabled = opts.enabled;
@@ -48,7 +48,7 @@ function maybeGC() {
 }
 
 // Track HAMT for potential GC - only tracks if it will be replaced
-function trackForGC(h: HAMT<any>) {
+function trackForGC(h: SharedMap<any>) {
   if (autoGCEnabled && h['slot'] < 0xFFFFFFFF) {
     pendingDispose.push(h);
   }
@@ -164,7 +164,7 @@ function encodeKey(key: string, ptr: number): number {
   return len;
 }
 
-export class HAMT<T extends ValueType> {
+export class SharedMap<T extends ValueType> {
   private _type: T;
   private root: number;
   private _size: number;
@@ -208,7 +208,7 @@ export class HAMT<T extends ValueType> {
     }
   }
 
-  set(key: string, value: ValueOf<T>): HAMT<T> {
+  set(key: string, value: ValueOf<T>): SharedMap<T> {
     maybeGC();
     trackForGC(this);
     const keyLen = encodeKey(key, keyBufPtr);
@@ -219,7 +219,7 @@ export class HAMT<T extends ValueType> {
     const existed = memDv.getUint32(batchBufPtr + 4, true);
     const valPtr = memDv.getUint32(batchBufPtr + 8, true);
     this.enc(value, memBuf, valPtr);
-    return new HAMT<T>(this._type, newRoot, this._size + (existed ? 0 : 1));
+    return new SharedMap<T>(this._type, newRoot, this._size + (existed ? 0 : 1));
   }
 
   get(key: string): ValueOf<T> | undefined {
@@ -236,13 +236,13 @@ export class HAMT<T extends ValueType> {
     return wasm.has(this.root, encodeKey(key, keyBufPtr)) === 1;
   }
 
-  delete(key: string): HAMT<T> {
+  delete(key: string): SharedMap<T> {
     maybeGC();
     const keyLen = encodeKey(key, keyBufPtr);
     const newRoot = wasm.tryRemove(this.root, keyLen) >>> 0;
     if (newRoot === 0xFFFFFFFF) return this;
     trackForGC(this);
-    return new HAMT<T>(this._type, newRoot, this._size - 1);
+    return new SharedMap<T>(this._type, newRoot, this._size - 1);
   }
 
   get size(): number { return this._size; }
@@ -304,7 +304,7 @@ export class HAMT<T extends ValueType> {
     }
   }
 
-  setMany(entries: [string, ValueOf<T>][]): HAMT<T> {
+  setMany(entries: [string, ValueOf<T>][]): SharedMap<T> {
     refreshMem();
     let offset = 0;
     for (const [key, value] of entries) {
@@ -316,7 +316,7 @@ export class HAMT<T extends ValueType> {
     }
     const newRoot = wasm.batchInsertTransient(this.root, entries.length);
     const inserted = memDv.getUint32(batchBufPtr - 4, true);
-    return new HAMT<T>(this._type, newRoot, this._size + inserted);
+    return new SharedMap<T>(this._type, newRoot, this._size + inserted);
   }
 
   getMany(keys: string[]): (ValueOf<T> | undefined)[] {
@@ -339,7 +339,7 @@ export class HAMT<T extends ValueType> {
     return results;
   }
 
-  deleteMany(keys: string[]): HAMT<T> {
+  deleteMany(keys: string[]): SharedMap<T> {
     refreshMem();
     let offset = 0;
     for (const key of keys) {
@@ -349,12 +349,27 @@ export class HAMT<T extends ValueType> {
     }
     const newRoot = wasm.batchDeleteTransient(this.root, keys.length);
     const deleted = memDv.getUint32(batchBufPtr - 4, true);
-    return new HAMT<T>(this._type, newRoot, this._size - deleted);
+    return new SharedMap<T>(this._type, newRoot, this._size - deleted);
+  }
+
+  /** Get value type */
+  get valueType(): T { return this._type; }
+
+  /** Create from worker data (read-only in worker) */
+  static fromWorkerData<T extends ValueType>(root: number, valueType: T): SharedMap<T> {
+    const map = new SharedMap<T>(valueType, 0, 0);
+    (map as any).root = root;
+    return map;
+  }
+
+  /** Serialize for worker transfer */
+  toWorkerData(): { root: number; valueType: T } {
+    return { root: this.root, valueType: this._type };
   }
 }
 
 // Internal numeric key class for HAMTList - shares WASM instance
-export class HAMTNumeric<T extends ValueType> {
+export class SharedMapNumeric<T extends ValueType> {
   readonly _type: T;
   readonly root: number;
   private valLen: (v: ValueOf<T>) => number;
@@ -370,14 +385,14 @@ export class HAMTNumeric<T extends ValueType> {
     this.dec = codec[2];
   }
 
-  set(idx: number, value: ValueOf<T>): HAMTNumeric<T> {
+  set(idx: number, value: ValueOf<T>): SharedMapNumeric<T> {
     const valLen = this.valLen(value);
     wasm.insertNum(this.root, idx, valLen);
     refreshMem();
     const newRoot = memDv.getUint32(batchBufPtr, true);
     const valPtr = memDv.getUint32(batchBufPtr + 8, true);
     this.enc(value, memBuf, valPtr);
-    return new HAMTNumeric(this._type, newRoot);
+    return new SharedMapNumeric(this._type, newRoot);
   }
 
   get(idx: number): ValueOf<T> | undefined {
@@ -388,10 +403,10 @@ export class HAMTNumeric<T extends ValueType> {
     return this.dec(keyPtr + 4, vLen);
   }
 
-  delete(idx: number): HAMTNumeric<T> {
+  delete(idx: number): SharedMapNumeric<T> {
     const newRoot = wasm.removeNum(this.root, idx) >>> 0;
     if (newRoot === 0xFFFFFFFF) return this;
-    return new HAMTNumeric(this._type, newRoot);
+    return new SharedMapNumeric(this._type, newRoot);
   }
 
   has(idx: number): boolean {
