@@ -1,14 +1,13 @@
 # hamt-shared
 
-A high-performance, immutable HAMT (Hash Array Mapped Trie) implementation using WebAssembly with SharedArrayBuffer support for multi-threaded JavaScript applications.
+High-performance immutable data structures (HAMT, Set, Vector) using WebAssembly with SharedArrayBuffer for multi-threaded JavaScript applications.
 
 ## Features
 
-- Immutable persistent data structure
+- Immutable persistent data structures
 - WASM-accelerated operations
 - SharedArrayBuffer for cross-worker sharing
 - Typed value support: `string`, `number`, `boolean`, `object`
-- Transient mode for efficient bulk operations (like Immutable.js withMutations)
 - Reference counting with automatic cleanup via FinalizationRegistry
 
 ## Installation
@@ -22,75 +21,99 @@ bun run build:wasm
 
 ```typescript
 import { HAMT, resetBuffer } from './hamt';
+import { HAMTSet } from './hamt-set';
+import { Vector, resetVector } from './vector';
 
-// Create typed HAMTs
-const strings = new HAMT('string').set('name', 'Alice');
-const numbers = new HAMT('number').set('count', 42);
+// HAMT (Map)
+const map = new HAMT('string').set('name', 'Alice');
+map.get('name'); // 'Alice'
 
-// Immutable updates
-const h1 = new HAMT('string').set('a', '1');
-const h2 = h1.set('b', '2');  // h1 unchanged
+// HAMTSet
+const set = new HAMTSet<string>().add('a').add('b');
+set.has('a'); // true
 
-// Batch operations
-const h3 = new HAMT('string').setMany([['x', '1'], ['y', '2']]);
-const values = h3.getMany(['x', 'y']);
-
-// Iteration
-h3.forEach((v, k) => console.log(k, v));
-
-// Reset buffer between independent operations
-resetBuffer();
+// Vector
+const vec = new Vector('number').push(1).push(2).push(3);
+vec.get(0); // 1
 ```
 
-## API
+## Worker Sharing
 
-- `new HAMT<T>(type)` - Create HAMT with value type
-- `set(key, value)` - Returns new HAMT with key set
-- `get(key)` - Get value or undefined
-- `has(key)` - Check key existence
-- `delete(key)` - Returns new HAMT without key
-- `setMany(entries)` / `getMany(keys)` / `deleteMany(keys)` - Batch ops
-- `forEach(fn)` / `entries()` / `keys()` / `values()` - Iteration
-- `size` - Entry count
-- `resetBuffer()` - Clear WASM memory
+All structures use SharedArrayBuffer for cross-worker data sharing. Workers receive a copy of the WASM memory buffer and can read the same data structures.
+
+```typescript
+// Main thread
+import { HAMT, sharedBuffer } from './hamt';
+const hamt = new HAMT('string').set('key', 'value');
+worker.postMessage({ buffer: sharedBuffer, root: hamt.root });
+
+// Worker - copies buffer to local WASM instance
+new Uint8Array(localMemory.buffer).set(new Uint8Array(sharedBuffer));
+```
+
+**Note:** True zero-copy sharing (via `WebAssembly.Memory`) works in Node.js but has a [known bug in Bun](https://github.com/oven-sh/bun/issues/25677).
 
 ## Benchmarks
 
-Performance comparison vs Immutable.js:
+### HAMT (Map) vs Immutable.js Map
 
 ```
---- N=100 (500 iterations) ---
-Operation     │ HAMT (ms) │ Imm (ms) │ Ratio
-──────────────┼───────────┼──────────┼────────
-insert       │    0.0505 │   0.0566 │ 1.12x faster
-batch ins    │    0.0333 │   0.0254 │ 1.31x slower
-get          │    0.0095 │   0.0068 │ 1.40x slower
-has          │    0.0084 │   0.0060 │ 1.40x slower
-delete       │    0.0085 │   0.0123 │ 1.45x faster
-iter         │    0.0067 │   0.0028 │ 2.40x slower
-
 --- N=1000 (100 iterations) ---
 Operation     │ HAMT (ms) │ Imm (ms) │ Ratio
 ──────────────┼───────────┼──────────┼────────
-insert       │    0.4612 │   0.3750 │ 1.23x slower
-batch ins    │    0.3188 │   0.1901 │ 1.68x slower
-get          │    0.0830 │   0.0994 │ 1.20x faster
-has          │    0.0695 │   0.0840 │ 1.21x faster
-delete       │    0.0045 │   0.0030 │ 1.51x slower
-iter         │    0.2256 │   0.0217 │ 10.38x slower
-
---- N=10000 (100 iterations) ---
-Operation     │ HAMT (ms) │ Imm (ms) │ Ratio
-──────────────┼───────────┼──────────┼────────
-insert       │    5.4919 │   4.0373 │ 1.36x slower
-get          │    1.6247 │   0.9736 │ 1.67x slower
-has          │    0.7715 │   1.0530 │ 1.36x faster
-delete       │    0.0058 │   0.0064 │ 1.11x faster
-iter         │    1.5197 │   0.3128 │ 4.86x slower
-
---- Key Advantage ---
-HAMT uses SharedArrayBuffer for zero-copy worker sharing.
+set          │    0.73   │   0.34   │ 2.15x slower
+get          │    0.14   │   0.06   │ 2.35x slower
+has          │    0.09   │   0.06   │ 1.40x slower
+delete       │    0.01   │   0.003  │ 3.01x slower
+iter         │    0.17   │   0.02   │ 9.26x slower
 ```
+
+### HAMTSet vs Immutable.Set vs Native Set
+
+```
+--- N=1000 (100 iterations) ---
+Operation     │ HAMT (ms) │ Imm (ms) │ vs Imm         │ Nat (ms) │ vs Native
+──────────────┼───────────┼──────────┼────────────────┼──────────┼──────────
+add          │    0.83   │   0.31   │ 2.72x slower   │   0.03   │ 29.68x slower
+has          │    0.09   │   0.07   │ 1.44x slower   │   0.001  │ 82.45x slower
+delete       │    0.01   │   0.002  │ 5.09x slower   │   0.007  │ 1.84x slower
+iter         │    0.11   │   0.02   │ 4.92x slower   │   0.009  │ 12.58x slower
+```
+
+### Vector vs Immutable.List vs Native Array
+
+```
+--- N=1000 (50 iterations) ---
+Operation     │ Vec (ms)  │ Imm (ms) │ vs Imm         │ Nat (ms) │ vs Native
+──────────────┼───────────┼──────────┼────────────────┼──────────┼──────────
+push         │    0.23   │   0.15   │ 1.55x slower   │   0.007  │ 34.91x slower
+get          │    0.04   │   0.01   │ 2.64x slower   │   0.002  │ 26.31x slower
+set          │    0.01   │   0.001  │ 11.96x slower  │   0.001  │ 15.47x slower
+pop          │    0.002  │   0.001  │ 1.84x slower   │   0.001  │ 2.17x slower
+iter         │    0.03   │   0.03   │ 1.15x faster   │   0.008  │ 3.19x slower
+```
+
+### Key Advantage
+
+HAMT/Vector/Set use SharedArrayBuffer for worker sharing - native structures are mutable and cannot be safely shared across workers.
+
+## API
+
+### HAMT
+- `new HAMT<T>(type)` - Create with value type ('string' | 'number' | 'boolean' | 'object')
+- `set(key, value)` / `get(key)` / `has(key)` / `delete(key)`
+- `setMany(entries)` / `getMany(keys)` / `deleteMany(keys)` - Batch ops
+- `forEach(fn)` / `entries()` / `keys()` / `values()` / `size`
+
+### HAMTSet
+- `new HAMTSet<T>()` - Create set for string | number
+- `add(value)` / `has(value)` / `delete(value)`
+- `addMany(values)` / `values()` / `forEach(fn)` / `size`
+
+### Vector
+- `new Vector<T>(type)` - Create with value type
+- `push(value)` / `pop()` / `get(index)` / `set(index, value)`
+- `forEach(fn)` / `toArray()` / `size`
 
 ## Scripts
 

@@ -808,3 +808,80 @@ export function getFieldF64(root: u32, keyLen: u32, offset: u32): f64 {
 export function getFieldStr(root: u32, keyLen: u32, fieldOffset: u32): u32 {
   return getFieldStrAt(root, KEY_BUF, keyLen, fieldOffset, BATCH_BUF);
 }
+
+
+// === NUMERIC KEY OPERATIONS ===
+// Use index directly as hash, store as 4-byte key
+
+function hashNum(n: u32): u32 {
+  // Mix bits for better distribution
+  let h = n;
+  h ^= h >> 16;
+  h *= 0x85ebca6b;
+  h ^= h >> 13;
+  h *= 0xc2b2ae35;
+  h ^= h >> 16;
+  return h;
+}
+
+function getNumInternal(node: u32, idx: u32, keyHash: u32, shift: u32): u32 {
+  while (node) {
+    const bm = load<u32>(node + 4);
+    if (!bm) {
+      if (load<u32>(node + 8) == keyHash && load<u32>(node + 12) == 4 && load<u32>(node + 20) == idx) return node;
+      return 0;
+    }
+    const bit: u32 = 1 << ((keyHash >> shift) & MASK);
+    if (!(bm & bit)) return 0;
+    node = load<u32>(node + 8 + (pc(bm & (bit - 1)) << 2));
+    shift += BITS;
+  }
+  return 0;
+}
+
+// Get by numeric index - returns leaf ptr or 0
+export function getNum(root: u32, idx: u32): u32 {
+  return getNumInternal(root, idx, hashNum(idx), 0);
+}
+
+// Get info by numeric index - writes [keyLen, valLen, keyPtr] to BATCH_BUF
+export function getNumInfo(root: u32, idx: u32): u32 {
+  const ptr = getNumInternal(root, idx, hashNum(idx), 0);
+  if (ptr) {
+    store<u32>(BATCH_BUF, 4);
+    store<u32>(BATCH_BUF + 4, load<u32>(ptr + 16));
+    store<u32>(BATCH_BUF + 8, ptr + 20);
+  }
+  return ptr;
+}
+
+// Insert with numeric key - stores [newRoot, existed, valPtr] at BATCH_BUF
+export function insertNum(root: u32, idx: u32, valLen: u32): void {
+  const keyHash = hashNum(idx);
+  const existed: u32 = getNumInternal(root, idx, keyHash, 0) ? 1 : 0;
+  const leaf = allocLeafInternal(keyHash, 4, valLen);
+  store<u32>(leaf + 20, idx); // store index as 4-byte key
+  const newRoot = insertInternal(root, leaf, 0);
+  store<u32>(BATCH_BUF, newRoot);
+  store<u32>(BATCH_BUF + 4, existed);
+  store<u32>(BATCH_BUF + 8, leaf + 24); // valPtr (after 4-byte key)
+}
+
+// Remove by numeric key - returns new root or 0xFFFFFFFF if not found
+export function removeNum(root: u32, idx: u32): u32 {
+  if (!root) return 0xFFFFFFFF;
+  const keyHash = hashNum(idx);
+  // Store idx in KEY_BUF for removeInternal
+  store<u32>(KEY_BUF, idx);
+  const newRoot = removeInternal(root, keyHash, 4, 0);
+  if (newRoot == root) {
+    decref(root);
+    return 0xFFFFFFFF;
+  }
+  return newRoot;
+}
+
+// Has numeric key
+export function hasNum(root: u32, idx: u32): u32 {
+  return getNumInternal(root, idx, hashNum(idx), 0) ? 1 : 0;
+}

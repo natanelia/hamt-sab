@@ -59,7 +59,9 @@ const decoder = new TextDecoder();
 
 // Use WASM-side root tracking for automatic memory management
 const freeSlots: number[] = [];
-const registry = new FinalizationRegistry<number>((slot) => { wasm.unregisterRoot(slot); });
+const registry = new FinalizationRegistry<{ slot: number; gen: number }>(({ slot, gen }) => { 
+  if (gen === generation) wasm.unregisterRoot(slot); 
+});
 
 function strLen(s: string): number {
   let len = 0;
@@ -112,7 +114,7 @@ function decodeObj(ptr: number, len: number): object {
   return obj;
 }
 
-type ValueType = 'string' | 'number' | 'boolean' | 'object';
+export type ValueType = 'string' | 'number' | 'boolean' | 'object';
 type Codec<T> = [(v: T) => number, (v: T, buf: Uint8Array, ptr: number) => number, (ptr: number, len: number) => T];
 
 const codecs: Record<ValueType, Codec<any>> = {
@@ -189,7 +191,7 @@ export class HAMT<T extends ValueType> {
         this.slot = wasm.registerRoot(root); // just stores, no incref
       }
       if (this.slot < 0xFFFFFFFF) {
-        registry.register(this, this.slot);
+        registry.register(this, { slot: this.slot, gen: generation });
       }
     } else {
       this.slot = 0xFFFFFFFF;
@@ -348,5 +350,51 @@ export class HAMT<T extends ValueType> {
     const newRoot = wasm.batchDeleteTransient(this.root, keys.length);
     const deleted = memDv.getUint32(batchBufPtr - 4, true);
     return new HAMT<T>(this._type, newRoot, this._size - deleted);
+  }
+}
+
+// Internal numeric key class for HAMTList - shares WASM instance
+export class HAMTNumeric<T extends ValueType> {
+  readonly _type: T;
+  readonly root: number;
+  private valLen: (v: ValueOf<T>) => number;
+  private enc: (v: ValueOf<T>, buf: Uint8Array, ptr: number) => number;
+  readonly dec: (ptr: number, len: number) => ValueOf<T>;
+
+  constructor(type: T, root = 0) {
+    this._type = type;
+    this.root = root;
+    const codec = codecs[type];
+    this.valLen = codec[0];
+    this.enc = codec[1];
+    this.dec = codec[2];
+  }
+
+  set(idx: number, value: ValueOf<T>): HAMTNumeric<T> {
+    const valLen = this.valLen(value);
+    wasm.insertNum(this.root, idx, valLen);
+    refreshMem();
+    const newRoot = memDv.getUint32(batchBufPtr, true);
+    const valPtr = memDv.getUint32(batchBufPtr + 8, true);
+    this.enc(value, memBuf, valPtr);
+    return new HAMTNumeric(this._type, newRoot);
+  }
+
+  get(idx: number): ValueOf<T> | undefined {
+    if (!wasm.getNumInfo(this.root, idx)) return undefined;
+    refreshMem();
+    const vLen = memDv.getUint32(batchBufPtr + 4, true);
+    const keyPtr = memDv.getUint32(batchBufPtr + 8, true);
+    return this.dec(keyPtr + 4, vLen);
+  }
+
+  delete(idx: number): HAMTNumeric<T> {
+    const newRoot = wasm.removeNum(this.root, idx) >>> 0;
+    if (newRoot === 0xFFFFFFFF) return this;
+    return new HAMTNumeric(this._type, newRoot);
+  }
+
+  has(idx: number): boolean {
+    return wasm.hasNum(this.root, idx) === 1;
   }
 }
