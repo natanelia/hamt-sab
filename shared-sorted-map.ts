@@ -156,12 +156,12 @@ export class SharedSortedMap<T extends ValueType> {
 
   private *entriesNatural(): Generator<[string, ValueOf<T>]> {
     if (!this.root) return;
-    let node = wasm.getMin(this.root);
+    let node = wasm.iterStart(this.root);
     while (node) {
       const key = decodeKeyFast(wasm.getKeyPacked(node));
       const value = decodeValue(this.valueType, wasm.getValPacked(node));
       yield [key, value];
-      node = wasm.getNext(node);
+      node = wasm.iterNext();
     }
   }
 
