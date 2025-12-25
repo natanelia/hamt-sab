@@ -10,6 +10,7 @@ let wasm: any;
 let keyBufPtr: number;
 let blobBufPtr: number;
 let mem: MemoryView;
+let lastBuf: ArrayBuffer;
 
 function initWasm(existingMemory?: WebAssembly.Memory) {
   wasmMemory = existingMemory || createSharedMemory();
@@ -17,9 +18,19 @@ function initWasm(existingMemory?: WebAssembly.Memory) {
   keyBufPtr = wasm.keyBuf();
   blobBufPtr = wasm.blobBuf();
   mem = new MemoryView(wasmMemory);
+  lastBuf = wasmMemory.buffer;
 }
 
 initWasm();
+
+// Inline refresh - only when buffer detached
+function refresh() {
+  if (lastBuf !== wasmMemory.buffer) {
+    lastBuf = wasmMemory.buffer;
+    mem.buf = new Uint8Array(lastBuf);
+    mem.dv = new DataView(lastBuf);
+  }
+}
 
 export const sharedBuffer = wasmMemory!.buffer as SharedArrayBuffer;
 export const sharedMemory = wasmMemory!;
@@ -35,31 +46,43 @@ export function resetSortedMap(): void { wasm.reset(); }
 
 export type Comparator<K> = (a: K, b: K) => number;
 
-function encodeKey(key: string): number {
-  mem.refresh();
-  const bytes = encoder.encode(key);
-  mem.buf.set(bytes, keyBufPtr);
-  return bytes.length;
+// Fast ASCII key encoding - avoids TextEncoder for simple keys
+function encodeKeyFast(key: string): number {
+  refresh();
+  const len = key.length;
+  const buf = mem.buf;
+  for (let i = 0; i < len; i++) {
+    const c = key.charCodeAt(i);
+    if (c > 127) {
+      // Fall back to TextEncoder for non-ASCII
+      const bytes = encoder.encode(key);
+      buf.set(bytes, keyBufPtr);
+      return bytes.length;
+    }
+    buf[keyBufPtr + i] = c;
+  }
+  return len;
 }
 
-function encodeValue<T extends ValueType>(type: T, value: ValueOf<T>): number {
-  mem.refresh();
+// Encode value and return [ptr, len] - avoids double encoding
+function encodeValueFast<T extends ValueType>(type: T, value: ValueOf<T>): [number, number] {
+  refresh();
   if (type === 'number') {
     mem.dv.setFloat64(blobBufPtr, value as number, true);
-    return wasm.allocBlob(8);
+    return [wasm.allocBlob(8), 8];
   }
   if (type === 'boolean') {
     mem.buf[blobBufPtr] = (value as boolean) ? 1 : 0;
-    return wasm.allocBlob(1);
+    return [wasm.allocBlob(1), 1];
   }
   const str = type === 'string' ? value as string : JSON.stringify(value);
   const bytes = encoder.encode(str);
   mem.buf.set(bytes, blobBufPtr);
-  return wasm.allocBlob(bytes.length);
+  return [wasm.allocBlob(bytes.length), bytes.length];
 }
 
 function decodeValue<T extends ValueType>(type: T, packed: number): ValueOf<T> {
-  mem.refresh();
+  refresh();
   const ptr = packed & 0xFFFFF;
   const len = packed >>> 20;
   if (type === 'number') return mem.dv.getFloat64(ptr, true) as ValueOf<T>;
@@ -68,11 +91,20 @@ function decodeValue<T extends ValueType>(type: T, packed: number): ValueOf<T> {
   return (type === 'string' ? str : JSON.parse(str)) as ValueOf<T>;
 }
 
-function decodeKey(packed: number): string {
-  mem.refresh();
+// Fast ASCII key decoding
+function decodeKeyFast(packed: number): string {
+  refresh();
   const ptr = packed & 0xFFFFF;
   const len = packed >>> 20;
-  return decoder.decode(mem.buf.subarray(ptr, ptr + len));
+  const buf = mem.buf;
+  // Try fast ASCII path
+  let s = '';
+  for (let i = 0; i < len; i++) {
+    const c = buf[ptr + i];
+    if (c > 127) return decoder.decode(buf.subarray(ptr, ptr + len));
+    s += String.fromCharCode(c);
+  }
+  return s;
 }
 
 export class SharedSortedMap<T extends ValueType> {
@@ -89,13 +121,12 @@ export class SharedSortedMap<T extends ValueType> {
   }
 
   set(key: string, value: ValueOf<T>): SharedSortedMap<T> {
-    const keyLen = encodeKey(key);
-    const valPtr = encodeValue(this.valueType, value);
-    const valLen = this.valueType === 'number' ? 8 : this.valueType === 'boolean' ? 1 : encoder.encode(this.valueType === 'string' ? value as string : JSON.stringify(value)).length;
+    const keyLen = encodeKeyFast(key);
+    const [valPtr, valLen] = encodeValueFast(this.valueType, value);
     const valPacked = valPtr | (valLen << 20);
     
     wasm.insertBlob(this.root, keyLen, valPacked);
-    mem.refresh();
+    refresh();
     const newRoot = mem.dv.getUint32(blobBufPtr, true);
     const existed = mem.dv.getUint32(blobBufPtr + 8, true);
     
@@ -104,7 +135,7 @@ export class SharedSortedMap<T extends ValueType> {
 
   get(key: string): ValueOf<T> | undefined {
     if (!this.root) return undefined;
-    const keyLen = encodeKey(key);
+    const keyLen = encodeKeyFast(key);
     const node = wasm.findBlob(this.root, keyLen);
     if (!node) return undefined;
     return decodeValue(this.valueType, wasm.getValPacked(node));
@@ -112,15 +143,13 @@ export class SharedSortedMap<T extends ValueType> {
 
   has(key: string): boolean {
     if (!this.root) return false;
-    const keyLen = encodeKey(key);
-    return wasm.findBlob(this.root, keyLen) !== 0;
+    return wasm.findBlob(this.root, encodeKeyFast(key)) !== 0;
   }
 
   delete(key: string): SharedSortedMap<T> {
     if (!this.root) return this;
-    const keyLen = encodeKey(key);
-    const exists = wasm.findBlob(this.root, keyLen) !== 0;
-    if (!exists) return this;
+    const keyLen = encodeKeyFast(key);
+    if (!wasm.findBlob(this.root, keyLen)) return this;
     const newRoot = wasm.deleteBlob(this.root, keyLen);
     return new SharedSortedMap(this.valueType, this.comparator, newRoot, this.size - 1);
   }
@@ -129,7 +158,7 @@ export class SharedSortedMap<T extends ValueType> {
     if (!this.root) return;
     let node = wasm.getMin(this.root);
     while (node) {
-      const key = decodeKey(wasm.getKeyPacked(node));
+      const key = decodeKeyFast(wasm.getKeyPacked(node));
       const value = decodeValue(this.valueType, wasm.getValPacked(node));
       yield [key, value];
       node = wasm.getNext(node);

@@ -10,6 +10,7 @@ let wasm: any;
 let keyBufPtr: number;
 let blobBufPtr: number;
 let mem: MemoryView;
+let lastBuf: ArrayBuffer;
 
 function initWasm(existingMemory?: WebAssembly.Memory) {
   wasmMemory = existingMemory || createSharedMemory();
@@ -17,9 +18,19 @@ function initWasm(existingMemory?: WebAssembly.Memory) {
   keyBufPtr = wasm.keyBuf();
   blobBufPtr = wasm.blobBuf();
   mem = new MemoryView(wasmMemory);
+  lastBuf = wasmMemory.buffer;
 }
 
 initWasm();
+
+// Inline refresh - only when buffer detached
+function refresh() {
+  if (lastBuf !== wasmMemory.buffer) {
+    lastBuf = wasmMemory.buffer;
+    mem.buf = new Uint8Array(lastBuf);
+    mem.dv = new DataView(lastBuf);
+  }
+}
 
 export const sharedBuffer = wasmMemory!.buffer as SharedArrayBuffer;
 export const sharedMemory = wasmMemory!;
@@ -33,15 +44,26 @@ export function getBufferCopy(): Uint8Array { return new Uint8Array(wasmMemory.b
 export function getAllocState() { return { heapEnd: wasm.getHeapEnd(), freeList: wasm.getFreeList() }; }
 export function resetOrderedMap(): void { wasm.reset(); }
 
-function encodeKey(key: string): number {
-  mem.refresh();
-  const bytes = encoder.encode(key);
-  mem.buf.set(bytes, keyBufPtr);
-  return bytes.length;
+// Fast ASCII key encoding
+function encodeKeyFast(key: string): number {
+  refresh();
+  const len = key.length;
+  const buf = mem.buf;
+  for (let i = 0; i < len; i++) {
+    const c = key.charCodeAt(i);
+    if (c > 127) {
+      const bytes = encoder.encode(key);
+      buf.set(bytes, keyBufPtr);
+      return bytes.length;
+    }
+    buf[keyBufPtr + i] = c;
+  }
+  return len;
 }
 
-function encodeValue<T extends ValueType>(type: T, value: ValueOf<T>): number {
-  mem.refresh();
+// Encode value directly to blobBuf, return length
+function encodeValueFast<T extends ValueType>(type: T, value: ValueOf<T>): number {
+  refresh();
   if (type === 'number') {
     mem.dv.setFloat64(blobBufPtr, value as number, true);
     return 8;
@@ -57,11 +79,21 @@ function encodeValue<T extends ValueType>(type: T, value: ValueOf<T>): number {
 }
 
 function decodeValue<T extends ValueType>(type: T, ptr: number, len: number): ValueOf<T> {
-  mem.refresh();
+  refresh();
   if (type === 'number') return mem.dv.getFloat64(ptr, true) as ValueOf<T>;
   if (type === 'boolean') return (mem.buf[ptr] !== 0) as ValueOf<T>;
-  const str = decoder.decode(mem.buf.subarray(ptr, ptr + len));
-  return (type === 'string' ? str : JSON.parse(str)) as ValueOf<T>;
+  // Fast ASCII decode
+  const buf = mem.buf;
+  let s = '';
+  for (let i = 0; i < len; i++) {
+    const c = buf[ptr + i];
+    if (c > 127) {
+      s = decoder.decode(buf.subarray(ptr, ptr + len));
+      break;
+    }
+    s += String.fromCharCode(c);
+  }
+  return (type === 'string' ? s : JSON.parse(s)) as ValueOf<T>;
 }
 
 export class SharedOrderedMap<T extends ValueType> {
@@ -80,68 +112,71 @@ export class SharedOrderedMap<T extends ValueType> {
   }
 
   set(key: string, value: ValueOf<T>): SharedOrderedMap<T> {
-    const keyLen = encodeKey(key);
-    const valLen = encodeValue(this.valueType, value);
+    const keyLen = encodeKeyFast(key);
+    const valLen = encodeValueFast(this.valueType, value);
     
     wasm.set(this.root, this.head, this.tail, keyLen, valLen);
-    mem.refresh();
+    refresh();
     
-    const newRoot = wasm.getResultRoot();
-    const newHead = wasm.getResultHead();
-    const newTail = wasm.getResultTail();
-    const isNew = wasm.getResultIsNew();
-    
-    return new SharedOrderedMap(this.valueType, newRoot, newHead, newTail, isNew ? this.size + 1 : this.size);
+    return new SharedOrderedMap(
+      this.valueType,
+      wasm.getResultRoot(),
+      wasm.getResultHead(),
+      wasm.getResultTail(),
+      wasm.getResultIsNew() ? this.size + 1 : this.size
+    );
   }
 
   get(key: string): ValueOf<T> | undefined {
     if (!this.root) return undefined;
-    const keyLen = encodeKey(key);
-    const node = wasm.find(this.root, keyLen);
+    const node = wasm.find(this.root, encodeKeyFast(key));
     if (!node) return undefined;
-    mem.refresh();
-    const valPtr = wasm.getListValPtr(node);
-    const valLen = wasm.getListValLen(node);
-    return decodeValue(this.valueType, valPtr, valLen);
+    refresh();
+    return decodeValue(this.valueType, wasm.getListValPtr(node), wasm.getListValLen(node));
   }
 
   has(key: string): boolean {
     if (!this.root) return false;
-    const keyLen = encodeKey(key);
-    return wasm.find(this.root, keyLen) !== 0;
+    return wasm.find(this.root, encodeKeyFast(key)) !== 0;
   }
 
   delete(key: string): SharedOrderedMap<T> {
     if (!this.root) return this;
-    const keyLen = encodeKey(key);
-    const exists = wasm.find(this.root, keyLen) !== 0;
-    if (!exists) return this;
+    const keyLen = encodeKeyFast(key);
+    if (!wasm.find(this.root, keyLen)) return this;
     
     wasm.del(this.root, this.head, this.tail, keyLen);
-    mem.refresh();
+    refresh();
     
-    const newRoot = wasm.getResultRoot();
-    const newHead = wasm.getResultHead();
-    const newTail = wasm.getResultTail();
-    
-    return new SharedOrderedMap(this.valueType, newRoot, newHead, newTail, this.size - 1);
+    return new SharedOrderedMap(
+      this.valueType,
+      wasm.getResultRoot(),
+      wasm.getResultHead(),
+      wasm.getResultTail(),
+      this.size - 1
+    );
   }
 
   *entries(): Generator<[string, ValueOf<T>]> {
-    mem.refresh();
     let node = this.head;
     while (node) {
+      refresh();
       const keyPtr = wasm.getListKeyPtr(node);
       const keyLen = wasm.getListKeyLen(node);
       const valPtr = wasm.getListValPtr(node);
       const valLen = wasm.getListValLen(node);
       
-      const key = decoder.decode(mem.buf.subarray(keyPtr, keyPtr + keyLen));
-      const value = decodeValue(this.valueType, valPtr, valLen);
-      yield [key, value];
+      // Fast ASCII key decode
+      const buf = mem.buf;
+      let key = '';
+      for (let i = 0; i < keyLen; i++) {
+        const c = buf[keyPtr + i];
+        if (c > 127) { key = decoder.decode(buf.subarray(keyPtr, keyPtr + keyLen)); break; }
+        key += String.fromCharCode(c);
+      }
       
+      yield [key, decodeValue(this.valueType, valPtr, valLen)];
       node = wasm.getListNext(node);
-      mem.refresh();
     }
   }
 
