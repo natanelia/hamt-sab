@@ -341,112 +341,64 @@ The main advantage is **cross-worker sharing** via SharedArrayBuffer - native st
 
 > Note: SharedSortedMap uses a Red-Black Tree for O(log n) sorted operations. Native Map requires sorting on iteration which is O(n log n).
 
-## d2ts Integration
+## TanStack DB Integration
 
-This library integrates with [@electric-sql/d2ts](https://github.com/electric-sql/d2ts) for differential dataflow pipelines with SharedArrayBuffer-backed state.
+SharedArrayBuffer-backed collections compatible with [TanStack DB](https://tanstack.com/db).
 
-### Installation
-
-```bash
-bun add @electric-sql/d2ts
-```
-
-### Basic Usage
+### SharedCollection
 
 ```typescript
-import { createSharedPipeline, SharedMultiSet } from './d2ts-integration';
-import { map, filter, reduce, keyBy } from '@electric-sql/d2ts';
+import { SharedCollection } from './tanstack-db-collection';
 
-// Create a pipeline with shared output
-const { run } = createSharedPipeline<number, number>(
-  (input) => input.pipe(
-    map((x) => x + 5),
-    filter((x) => x % 2 === 0)
-  )
-);
+let col = new SharedCollection<{ id: string; name: string }>('users');
+col = col.insert({ id: '1', name: 'Alice' });
+col = col.update('1', { name: 'Alicia' });
+col.get('1');  // { id: '1', name: 'Alicia' }
 
-// Run with input data (value, multiplicity pairs)
-const results = run([[1, 1], [2, 1], [3, 1]]);
-// Results: [[6, 1], [8, 1]] - backed by SharedArrayBuffer
+// Zero-copy worker transfer
+worker.postMessage({ root: col.getRoot(), size: col.size });
+// Worker: SharedCollection.fromRoot('users', root, size)
 ```
 
-### Incremental Updates
+### sharedCollectionConfig
+
+Standalone TanStack DB collection with SharedArrayBuffer storage:
 
 ```typescript
-const { graph, input, getResults } = createSharedPipeline<
-  { id: string; value: number },
-  { id: string; doubled: number }
->(
-  (inp) => inp.pipe(map((x) => ({ id: x.id, doubled: x.value * 2 })))
-);
+import { sharedCollectionConfig } from './tanstack-db-collection';
 
-// Initial data
-input.sendData(0, new MultiSet([[{ id: 'a', value: 10 }, 1]]));
-input.sendFrontier(1);
-graph.run();
+const config = sharedCollectionConfig({
+  id: 'todos',
+  initialData: [{ id: '1', text: 'Test', completed: false }],
+});
 
-// Incremental update: delete 'a', add 'b'
-input.sendData(1, new MultiSet([
-  [{ id: 'a', value: 10 }, -1],  // Delete (negative multiplicity)
-  [{ id: 'b', value: 20 }, 1],   // Insert
-]));
-input.sendFrontier(2);
-graph.run();
+// Use with TanStack DB Collection
+const collection = new Collection(config);
 ```
 
-### SharedMultiSet
+### withSharedCache
 
-Direct multiset operations backed by SharedArrayBuffer:
-
-```typescript
-import { SharedMultiSet } from './d2ts-integration';
-
-let state = new SharedMultiSet<string>([['alice', 1], ['bob', 1]]);
-
-// Apply changes (differential semantics)
-const change = new SharedMultiSet<string>([['bob', -1], ['charlie', 1]]);
-state = state.concat(change);
-// Result: alice=1, charlie=1 (bob removed)
-
-// Transform operations
-const mapped = state.mapValues(s => s.toUpperCase());
-const filtered = state.filter(s => s.length > 5);
-```
-
-### SharedIndex
-
-Versioned state storage for stateful operators:
+Wrap any TanStack DB sync provider (e.g., Electric) to add a SharedArrayBuffer cache layer:
 
 ```typescript
-import { SharedIndex, v } from './d2ts-integration';
+import { electricSync } from '@electric-sql/tanstack';
+import { withSharedCache } from './tanstack-db-collection';
 
-const index = new SharedIndex<string, number>();
-index.addValue('user:1', v(0), [100, 1]);  // Version 0
-index.addValue('user:1', v(1), [50, 1]);   // Version 1
+// Wrap Electric sync with SharedArrayBuffer cache
+const cached = withSharedCache(electricSync({
+  url: 'http://localhost:3000/v1/shape',
+  table: 'todos',
+}).sync);
 
-// Reconstruct state at any version
-index.reconstructAt('user:1', v(0));  // [[100, 1]]
-index.reconstructAt('user:1', v(1));  // [[100, 1], [50, 1]]
+// Use in TanStack DB
+const collection = new Collection({ id: 'todos', ...cached });
 
-// Join two indexes
-const joined = index1.join(index2);
-```
+// Fast zero-copy reads (bypasses Electric)
+cached.get('todo-1');
+cached.toArray();
 
-### State Serialization
-
-Share pipeline results across workers:
-
-```typescript
-import { getSharedPipelineState, initSharedPipelineState } from './d2ts-integration';
-
-// Main thread
-const results = pipeline.run(data);
-const sharedState = getSharedPipelineState(results);
-worker.postMessage(sharedState);
-
-// Worker thread
-const workerResults = initSharedPipelineState<number>(workerData);
-// Continue processing with shared data
+// Share with workers
+worker.postMessage(cached.getSharedState());
 ```
 
 ## License

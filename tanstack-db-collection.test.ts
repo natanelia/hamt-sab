@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { SharedCollection, sharedCollectionConfig } from './tanstack-db-collection.ts';
+import { SharedCollection, sharedCollectionConfig, withSharedCache } from './tanstack-db-collection.ts';
 
 type Todo = { id: string; text: string; completed: boolean };
 
@@ -101,5 +101,88 @@ describe('sharedCollectionConfig', () => {
     const state = config.getSharedState();
     expect(state.id).toBe('todos');
     expect(typeof state.root).toBe('number');
+  });
+});
+
+describe('withSharedCache', () => {
+  it('mirrors upstream sync writes to SharedArrayBuffer', () => {
+    // Simulate upstream sync (e.g., Electric)
+    const upstreamSync = {
+      sync: (params: any) => {
+        params.begin();
+        params.write({ type: 'insert', value: { id: '1', text: 'From Electric', completed: false } });
+        params.write({ type: 'insert', value: { id: '2', text: 'Another', completed: true } });
+        params.commit();
+        params.markReady();
+      },
+    };
+
+    const cached = withSharedCache<Todo>(upstreamSync);
+    
+    // Trigger sync
+    const writes: any[] = [];
+    cached.sync.sync({
+      begin: () => {},
+      write: (msg) => writes.push(msg),
+      commit: () => {},
+      markReady: () => {},
+    });
+
+    // Upstream writes passed through
+    expect(writes.length).toBe(2);
+    
+    // Cache populated
+    expect(cached.get('1')).toEqual({ id: '1', text: 'From Electric', completed: false });
+    expect(cached.get('2')).toEqual({ id: '2', text: 'Another', completed: true });
+    expect(cached.toArray().length).toBe(2);
+  });
+
+  it('handles updates and deletes', () => {
+    const upstreamSync = {
+      sync: (params: any) => {
+        params.begin();
+        params.write({ type: 'insert', value: { id: '1', text: 'Original', completed: false } });
+        params.commit();
+        
+        params.begin();
+        params.write({ type: 'update', value: { id: '1', text: 'Updated', completed: true } });
+        params.commit();
+        
+        params.begin();
+        params.write({ type: 'delete', key: '1' });
+        params.commit();
+        params.markReady();
+      },
+    };
+
+    const cached = withSharedCache<Todo>(upstreamSync);
+    cached.sync.sync({ begin: () => {}, write: () => {}, commit: () => {}, markReady: () => {} });
+
+    expect(cached.get('1')).toBeUndefined();
+    expect(cached.toArray().length).toBe(0);
+  });
+
+  it('provides zero-copy state for workers', () => {
+    const upstreamSync = {
+      sync: (params: any) => {
+        params.begin();
+        params.write({ type: 'insert', value: { id: '1', text: 'Test', completed: false } });
+        params.commit();
+        params.markReady();
+      },
+    };
+
+    const cached = withSharedCache<Todo>(upstreamSync);
+    cached.sync.sync({ begin: () => {}, write: () => {}, commit: () => {}, markReady: () => {} });
+
+    const state = cached.getSharedState();
+    expect(typeof state.root).toBe('number');
+    expect(state.size).toBe(1);
+
+    // Worker reconstructs from state
+    const workerCached = withSharedCache<Todo>({ sync: () => {} });
+    workerCached.fromSharedState(state);
+    
+    expect(workerCached.get('1')).toEqual({ id: '1', text: 'Test', completed: false });
   });
 });

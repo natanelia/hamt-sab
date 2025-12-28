@@ -1,0 +1,25 @@
+# Tests
+*.test.ts
+
+# AssemblyScript source (WASM is published)
+*.as.ts
+
+# Development
+benchmark.ts
+vitest*.ts
+tsconfig.json
+demo/
+demo-app/
+.kiro/
+.github/
+.vscode/
+
+# Build artifacts
+bun.lock
+bun.lockb
+dist/
+
+# Misc
+*.log
+.DS_Store
+.env*

@@ -64,7 +64,8 @@ export class SharedCollection<T extends CollectionItem> {
   }
 }
 
-type SyncWrite<T> = (msg: { type: 'insert' | 'update' | 'delete'; value?: T }) => void;
+type SyncWrite<T> = (msg: { type: 'insert' | 'update' | 'delete'; value?: T; key?: string }) => void;
+type SyncParams<T> = { begin: () => void; write: SyncWrite<T>; commit: () => void; markReady: () => void };
 
 /**
  * Create TanStack DB collection config backed by SharedArrayBuffer
@@ -91,7 +92,7 @@ export function sharedCollectionConfig<T extends CollectionItem>(config: {
     id,
     primaryKey,
     sync: {
-      sync: (params: { begin: () => void; write: SyncWrite<T>; commit: () => void; markReady: () => void }) => {
+      sync: (params: SyncParams<T>) => {
         syncBegin = params.begin;
         syncWrite = params.write;
         syncCommit = params.commit;
@@ -119,10 +120,49 @@ export function sharedCollectionConfig<T extends CollectionItem>(config: {
     },
     startSync: true,
     gcTime: 0,
-    // Worker sharing
     getSharedState: () => ({ id, root: collection.getRoot(), size: collection.size }),
     fromSharedState: (state: { root: number; size: number }) => {
       collection = SharedCollection.fromRoot<T>(id, state.root, state.size);
+    },
+  };
+}
+
+/**
+ * Wrap any TanStack DB sync config to mirror data into SharedArrayBuffer.
+ * Provides fast zero-copy reads for workers while upstream (e.g., Electric) handles persistence.
+ */
+export function withSharedCache<T extends CollectionItem>(
+  upstreamSync: { sync: (params: SyncParams<T>) => void | (() => void) },
+  options: { primaryKey?: keyof T & string } = {}
+) {
+  const pk = options.primaryKey ?? 'id' as keyof T & string;
+  let cache = new SharedCollection<T>('cache');
+
+  return {
+    sync: {
+      sync: (params: SyncParams<T>) => {
+        // Intercept writes to mirror into SharedArrayBuffer
+        const wrappedWrite: SyncWrite<T> = (msg) => {
+          if (msg.type === 'insert' && msg.value) {
+            cache = cache.insert(msg.value);
+          } else if (msg.type === 'update' && msg.value) {
+            cache = cache.update(msg.value[pk] as string, msg.value);
+          } else if (msg.type === 'delete' && msg.key) {
+            cache = cache.delete(msg.key);
+          }
+          params.write(msg);
+        };
+
+        return upstreamSync.sync({ ...params, write: wrappedWrite });
+      },
+    },
+    // Fast SharedArrayBuffer reads
+    getCache: () => cache,
+    get: (key: string) => cache.get(key),
+    toArray: () => cache.toArray(),
+    getSharedState: () => ({ root: cache.getRoot(), size: cache.size }),
+    fromSharedState: (state: { root: number; size: number }) => {
+      cache = SharedCollection.fromRoot<T>('cache', state.root, state.size);
     },
   };
 }
