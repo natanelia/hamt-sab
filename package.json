@@ -1,7 +1,7 @@
 {
-  "name": "shared-immutable",
+  "name": "zerocopy",
   "version": "0.1.0",
-  "description": "High-performance immutable data structures with SharedArrayBuffer for cross-worker sharing",
+  "description": "Zero-copy immutable data structures for multi-threaded JavaScript via SharedArrayBuffer + WASM",
   "type": "module",
   "main": "shared.ts",
   "types": "shared.ts",
@@ -43,12 +43,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/natanelia/hamt-sab.git"
+    "url": "git+https://github.com/natanelia/zerocopy.git"
   },
   "bugs": {
-    "url": "https://github.com/natanelia/hamt-sab/issues"
+    "url": "https://github.com/natanelia/zerocopy/issues"
   },
-  "homepage": "https://github.com/natanelia/hamt-sab#readme",
+  "homepage": "https://github.com/natanelia/zerocopy#readme",
   "engines": {
     "bun": ">=1.0.0"
   },

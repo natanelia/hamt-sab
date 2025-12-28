@@ -1,6 +1,6 @@
-# shared-immutable
+# zerocopy
 
-High-performance immutable data structures using WebAssembly with SharedArrayBuffer for multi-threaded JavaScript applications.
+Zero-copy immutable data structures for multi-threaded JavaScript via SharedArrayBuffer + WASM.
 
 ## Features
 
@@ -21,7 +21,7 @@ bun run build:wasm
 ## Usage
 
 ```typescript
-import { SharedMap, SharedSet, SharedList, SharedStack, SharedQueue, SharedLinkedList, SharedDoublyLinkedList, SharedOrderedMap, SharedOrderedSet, SharedSortedMap, SharedSortedSet, SharedPriorityQueue } from './shared';
+import { SharedMap, SharedSet, SharedList, SharedStack, SharedQueue, SharedLinkedList, SharedDoublyLinkedList, SharedOrderedMap, SharedOrderedSet, SharedSortedMap, SharedSortedSet, SharedPriorityQueue } from 'zerocopy';
 
 // SharedMap - O(log32 n) operations
 const map = new SharedMap('string').set('name', 'Alice');
