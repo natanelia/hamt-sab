@@ -348,7 +348,7 @@ SharedArrayBuffer-backed collections compatible with [TanStack DB](https://tanst
 ### SharedCollection
 
 ```typescript
-import { SharedCollection } from './tanstack-db-collection';
+import { SharedCollection } from 'zerocopy/tanstack';
 
 let col = new SharedCollection<{ id: string; name: string }>('users');
 col = col.insert({ id: '1', name: 'Alice' });
@@ -365,7 +365,7 @@ worker.postMessage({ root: col.getRoot(), size: col.size });
 Standalone TanStack DB collection with SharedArrayBuffer storage:
 
 ```typescript
-import { sharedCollectionConfig } from './tanstack-db-collection';
+import { sharedCollectionConfig } from 'zerocopy/tanstack';
 
 const config = sharedCollectionConfig({
   id: 'todos',
@@ -382,7 +382,7 @@ Wrap any TanStack DB sync provider (e.g., Electric) to add a SharedArrayBuffer c
 
 ```typescript
 import { electricSync } from '@electric-sql/tanstack';
-import { withSharedCache } from './tanstack-db-collection';
+import { withSharedCache } from 'zerocopy/tanstack';
 
 // Wrap Electric sync with SharedArrayBuffer cache
 const cached = withSharedCache(electricSync({
